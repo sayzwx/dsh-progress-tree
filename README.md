@@ -11,7 +11,7 @@
 
 ---
 
-## 🌟 为什么这个项目值得看？ (Interview Highlights)
+## 🌟 项目亮点(Interview Highlights)
 
 - **🚀 5 分钟极速上手**：无需配置本地 MySQL 或 Node 环境，通过 docker compose up 即可一键启动前后端及数据库连接。
 - **☁️ 云原生架构**：采用 **TiDB Cloud Serverless** 替代传统本地数据库，实现存储计算分离，支持 SSL 加密与 IP 白名单，符合企业安全规范。

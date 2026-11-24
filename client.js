@@ -34,6 +34,10 @@ window.__ModuleLoader__.load({
       'status.done': '已完成',
       'status.blocked': '阻塞',
       'status.paused': '暂停',
+      stalePlan: '需求已更新，计划待同步',
+      running: '正在运行',
+      idle: '等待中',
+      working: 'AI 正在执行',
     }
     const en = {
       title: 'Progress tree',
@@ -60,6 +64,10 @@ window.__ModuleLoader__.load({
       'status.done': 'Done',
       'status.blocked': 'Blocked',
       'status.paused': 'Paused',
+      stalePlan: 'Requirements changed — plan needs an update',
+      running: 'Running',
+      idle: 'Idle',
+      working: 'AI is working',
     }
 
     const COLORS = {
@@ -99,6 +107,11 @@ window.__ModuleLoader__.load({
 .dpt-live-row[data-kind="active"] .dpt-live-text{color:${COLORS.text}}
 .dpt-live-narration{margin-top:4px;padding-top:5px;border-top:1px dashed ${COLORS.border}}
 .dpt-live-narration .dpt-live-text{white-space:normal;color:${COLORS.text};font-size:11px;line-height:15px;max-height:45px;overflow:hidden}
+.dpt-live-row[data-kind="running"] .dpt-live-label{color:${COLORS.active}}
+.dpt-live-streaming{border-top-color:${COLORS.active}}
+.dpt-stream{white-space:pre-wrap;word-break:break-word;max-height:52px;overflow:hidden;color:${COLORS.text};font-size:11px;line-height:15px}
+.dpt-stream::after{content:"▍";color:${COLORS.active};animation:dptBlink 1s steps(2,start) infinite}
+.dpt-stale{margin:0 0 6px;padding:5px 8px;border-radius:6px;border:1px dashed ${COLORS.paused};color:${COLORS.paused};font-size:11px;line-height:15px;background:transparent}
 .dpt-tree-wrap{display:flex;flex-direction:column;gap:0}
 .dpt-tree-root{position:relative;display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;padding:2px 0 2px}
 .dpt-tree-root::after{content:'';position:absolute;left:3px;top:26px;bottom:-2px;border-left:2px solid ${COLORS.border}}
@@ -158,7 +171,10 @@ window.__ModuleLoader__.load({
 .dpt-dock-percent{flex:none;font-size:10px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary, ${COLORS.secondary})}
 .dpt-dock-action{flex:none;display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;padding:0;border:0;border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary, ${COLORS.secondary});font-size:10px;line-height:1;cursor:pointer}
 .dpt-dock-action:hover{background:var(--dsw-alias-interactive-bg-hover, ${COLORS.card});color:var(--dsw-alias-label-primary, ${COLORS.text})}
+.dpt-dock-live{flex:none;width:6px;height:6px;border-radius:999px;background:${COLORS.tertiary};opacity:.45}
+.dpt-dock-live[data-live="on"]{background:${COLORS.active};opacity:1;animation:dptPulse 1.2s ease-in-out infinite}
 @keyframes dptPulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes dptBlink{0%,100%{opacity:1}50%{opacity:0}}
 @keyframes dptPop{0%{transform:scale(.6)}100%{transform:scale(1)}}
 `
 
@@ -299,10 +315,13 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function ProgressPane({ sessionId, useProjection, useTabInfo, t }) {
+    function ProgressPane({ sessionId, useProjection, useTabInfo, useSessions, t }) {
       const view = useProjection('progressTree')
       const tabInfo = useTabInfo !== undefined ? useTabInfo() : undefined
       const openTab = tabInfo !== undefined ? { tab: tabInfo.tab } : undefined
+      const sessions = typeof useSessions === 'function' ? useSessions() : undefined
+      const binding = sessionId !== undefined && sessions !== undefined ? sessions.binding(sessionId) : undefined
+      const live = useLiveFeed(binding)
       const plan = view === undefined || view === null ? undefined : view.plan
 
       if (plan === undefined || plan === null) {
@@ -338,10 +357,16 @@ window.__ModuleLoader__.load({
           : problemNode !== undefined
             ? problemNode.note || problemNode.title
             : undefined
+      const stale =
+        view.stale === true ||
+        (typeof plan.updatedAt === 'number' && typeof view.lastUserAt === 'number' && view.lastUserAt > plan.updatedAt)
+      const streaming = typeof live.streamText === 'string' ? live.streamText.trim() : ''
+      const runningTool = live.running === null || live.running === undefined ? null : live.running.name
 
       return h(
         'div',
         { className: 'dpt-root' },
+        stale ? h('div', { className: 'dpt-stale' }, '⚠ ' + t('stalePlan')) : null,
         h(
           'div',
           { className: 'dpt-head' },
@@ -378,6 +403,14 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'dpt-live-text' }, activeNode.title + (activeNode.note ? ' — ' + activeNode.note : '')),
               )
             : null,
+          runningTool !== null
+            ? h(
+                'div',
+                { className: 'dpt-live-row', 'data-kind': 'running' },
+                h('span', { className: 'dpt-live-label' }, '⚙ ' + t('running')),
+                h('span', { className: 'dpt-live-text' }, runningTool),
+              )
+            : null,
           nextPending !== undefined
             ? h(
                 'div',
@@ -394,14 +427,21 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'dpt-live-text' }, problemText),
               )
             : null,
-          latestLive !== undefined
+          streaming !== ''
             ? h(
                 'div',
-                { className: 'dpt-live-narration' },
-                h('span', { className: 'dpt-live-label' }, t('liveNarration')),
-                h('div', { className: 'dpt-live-text' }, latestLive.text),
+                { className: 'dpt-live-narration dpt-live-streaming' },
+                h('span', { className: 'dpt-live-label' }, '▍ ' + t('liveNarration')),
+                h('div', { className: 'dpt-live-text dpt-stream' }, streaming),
               )
-            : null,
+            : latestLive !== undefined
+              ? h(
+                  'div',
+                  { className: 'dpt-live-narration' },
+                  h('span', { className: 'dpt-live-label' }, t('liveNarration')),
+                  h('div', { className: 'dpt-live-text' }, latestLive.text),
+                )
+              : null,
         ),
         blockedNodes.length > 0
           ? h(
@@ -460,6 +500,120 @@ window.__ModuleLoader__.load({
       )
     }
 
+    const NO_LIVE = Object.freeze({
+      streamText: '',
+      running: null,
+      lastUserAt: 0,
+      lastAssistantAt: 0,
+      lastAssistantText: '',
+    })
+
+    function chunkText(chunk) {
+      return chunk !== null && typeof chunk === 'object' && chunk.type === 'text-delta' && typeof chunk.text === 'string'
+        ? chunk.text
+        : ''
+    }
+
+    function liveMessageText(event) {
+      const data = event !== null && typeof event === 'object' && event.data !== null && typeof event.data === 'object' ? event.data : undefined
+      const message = data !== undefined && data.message !== null && typeof data.message === 'object' ? data.message : data
+      const content = message !== undefined ? (message.content ?? message.parts ?? data?.content) : undefined
+      const pieces = []
+      if (typeof content === 'string') pieces.push(content)
+      if (Array.isArray(content)) {
+        for (const part of content) {
+          if (part !== null && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string') pieces.push(part.text)
+        }
+      }
+      const text = pieces.join(' ').replace(/\s+/g, ' ').trim()
+      return text === '' ? '' : text.slice(0, 280)
+    }
+
+    function foldLiveEntry(acc, entry) {
+      if (entry === null || typeof entry !== 'object') return acc
+      if (entry.type === 'transient') {
+        const event = entry.event
+        if (event === null || typeof event !== 'object' || event.type !== 'assistant/live-chunk') return acc
+        const delta = chunkText(event.data?.chunk)
+        if (delta === '') return acc
+        return { ...acc, streamText: (acc.streamText + delta).slice(-600) }
+      }
+      const event = entry.event
+      if (event === null || typeof event !== 'object') return acc
+      const data = event.data !== null && typeof event.data === 'object' ? event.data : {}
+      if (event.type === 'user/message') {
+        return { ...acc, streamText: '', running: null, lastUserAt: event.time, lastAssistantText: '' }
+      }
+      if (event.type === 'assistant/message') {
+        return {
+          ...acc,
+          streamText: '',
+          lastAssistantAt: event.time,
+          lastAssistantText: liveMessageText(event) || acc.lastAssistantText,
+        }
+      }
+      if (event.type === 'tool/call') {
+        return {
+          ...acc,
+          running: { callId: data.callId ?? null, name: typeof data.name === 'string' ? data.name : null, at: event.time },
+        }
+      }
+      if (event.type === 'tool/result') {
+        const callId = data.message?.toolCallId ?? data.message?.source?.callId
+        if (acc.running !== null && (callId === undefined || acc.running.callId === callId)) return { ...acc, running: null }
+        return acc
+      }
+      if (event.type === 'turn/end') return { ...acc, running: null, streamText: '' }
+      return acc
+    }
+
+    function liveFromWindow(window) {
+      const entries = Array.isArray(window?.entries) ? window.entries : []
+      let acc = NO_LIVE
+      for (const entry of entries) acc = foldLiveEntry(acc, entry)
+      return acc
+    }
+
+    function createLiveStore(source) {
+      let acc = liveFromWindow(source.getSnapshot())
+      const listeners = new Set()
+      let unsubscribe = null
+      const ensure = () => {
+        if (unsubscribe !== null) return
+        unsubscribe =
+          typeof source.subscribe === 'function'
+            ? source.subscribe(() => {
+                acc = liveFromWindow(source.getSnapshot())
+                for (const listener of listeners) listener()
+              })
+            : () => {}
+      }
+      return {
+        get: () => acc,
+        subscribe: listener => {
+          ensure()
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        dispose: () => {
+          if (typeof unsubscribe === 'function') unsubscribe()
+          unsubscribe = null
+        },
+      }
+    }
+
+    function useLiveFeed(binding) {
+      const source = binding === undefined ? undefined : binding.eventSource
+      const store = React.useMemo(() => (source === undefined ? null : createLiveStore(source)), [source])
+      React.useEffect(() => () => store?.dispose(), [store])
+      const subscribe = React.useCallback(
+        listener => (store === null ? NOOP_SUBSCRIBE() : store.subscribe(listener)),
+        [store],
+      )
+      const getSnapshot = React.useCallback(() => (store === null ? NO_LIVE : store.get()), [store])
+      return React.useSyncExternalStore(subscribe, getSnapshot)
+    }
+
     function autoOpenKey(sessionId) {
       return 'dsh.progress-tree.auto.' + sessionId
     }
@@ -478,7 +632,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function ProgressDock({ sessionId, face, openTab, useProjection, t }) {
+    function ProgressDock({ sessionId, face, openTab, useProjection, useSessions, t }) {
       const subscribe = React.useCallback(
         listener => (face === undefined ? NOOP_SUBSCRIBE() : face.subscribe(listener)),
         [face],
@@ -487,6 +641,9 @@ window.__ModuleLoader__.load({
       const faceView = React.useSyncExternalStore(subscribe, getSnapshot)
       const projected = typeof useProjection === 'function' ? useProjection('progressTree') : undefined
       const view = faceView ?? projected
+      const sessions = typeof useSessions === 'function' ? useSessions() : undefined
+      const binding = sessionId !== undefined && sessions !== undefined ? sessions.binding(sessionId) : undefined
+      const live = useLiveFeed(binding)
       const open = typeof openTab === 'function' ? openTab : openProgressTab
       React.useEffect(() => {
         maybeAutoOpen(sessionId, view, openTab)
@@ -522,6 +679,11 @@ window.__ModuleLoader__.load({
               toggle()
             },
           },
+          h('span', {
+            className: 'dpt-dock-live',
+            'data-live': live.running !== null || live.streamText !== '' ? 'on' : 'off',
+            title: live.running !== null ? t('running') + (live.running.name ? ': ' + live.running.name : '') : t('idle'),
+          }),
           h('span', { className: 'dpt-dock-title' }, plan.title),
           h(
             'div',

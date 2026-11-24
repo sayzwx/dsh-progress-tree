@@ -34,18 +34,24 @@ Keep a live progress tree for the user whenever work takes more than a couple of
    parallel \`lanes\`, and the plan as \`tasks\`. Every task needs a stable \`id\` and a \`title\`;
    use \`parentId\` for sub-steps, \`lane\` for a parallel lane, and \`kind\` ("phase" | "task" |
    "step" | "agent"). Mark exactly the step you are doing now as \`"status":"active"\`.
-2. Before starting another step, call \`progress_update\` with \`{"id":"<node>","status":"active"}\`.
-3. When a step finishes, call \`progress_update\` with \`{"id":"<node>","status":"done","note":"..."}\`
+2. Re-plan the moment requirements change. When the user adds, drops, or changes scope, call
+   \`progress_plan\` again with the complete new tree, or drop obsolete nodes with
+   \`progress_update\` \`{"id":"<node>","remove":true}\`. A plan that no longer matches the latest
+   request is flagged stale for the user.
+3. Before starting another step, call \`progress_update\` with \`{"id":"<node>","status":"active"}\`.
+4. When a step finishes, call \`progress_update\` with \`{"id":"<node>","status":"done","note":"..."}\`
    and list produced files or URLs in \`artifacts\` (\`[{"path":"docs/x.md"}]\`).
-4. If a step is blocked, call \`progress_update\` with \`{"id":"<node>","status":"blocked","note":"<reason>"}\`.
+5. If a step is blocked, call \`progress_update\` with \`{"id":"<node>","status":"blocked","note":"<reason>"}\`.
    The user sees a red alert with that reason; never leave a blocked step without a note.
-5. Use \`progress_note\` for one short narrative line ("schema finished, next the tools") with
-   optional \`severity\` warn/error. Notes are visible to the user immediately.
-6. When new work appears mid-flight, call \`progress_update\` with a new \`id\` and \`title\` to append
+6. Use \`progress_note\` between steps for one short narrative line ("schema finished, next the tools"),
+   with optional \`severity\` warn/error. Notes are visible to the user immediately.
+7. When new work appears mid-flight, call \`progress_update\` with a new \`id\` and \`title\` to append
    a node (optionally with \`parentId\`); the tree grows without a new plan.
-7. In each user-visible update, state three things explicitly: what was just finished ("已完成 …"),
-   what you are doing now ("现在 …"), and any blocking risk or question ("问题 …"). Keep it to one
-   short sentence; the pane shows your latest sentence as "AI update".
+8. Update in the same turn as the work: mark the previous step done and the next one active before
+   you move on. Never batch updates at the end, and keep exactly one active node at all times.
+9. In each user-visible update, state three things explicitly in one short sentence: what was just
+   finished ("已完成 …"), what happens now ("现在 …"), and any blocking risk or question ("问题 …").
+   The pane streams your visible narration while you work, so keep that sentence current.
 
 Subagent spawns are added to the tree automatically. Keep titles short and concrete; do not use
 this for one-line answers, and do not update the tree for every tiny tool call.`
@@ -224,6 +230,26 @@ function normalizeUpdate(state, args, at) {
     return { state: { ...state, plan: planNow, revision: state.revision + 1, updatedAt: at }, added: true }
   }
 
+  if (args.remove === true) {
+    if (!plan.nodes.some(node => node.id === id)) return undefined
+    const doomed = new Set([id])
+    let grew = true
+    while (grew) {
+      grew = false
+      for (const node of plan.nodes) {
+        if (node.parentId !== null && doomed.has(node.parentId) && !doomed.has(node.id)) {
+          doomed.add(node.id)
+          grew = true
+        }
+      }
+    }
+    const nodes = plan.nodes.filter(node => !doomed.has(node.id))
+    return {
+      state: { ...state, plan: { ...plan, nodes, updatedAt: at }, revision: state.revision + 1, updatedAt: at },
+      added: false,
+    }
+  }
+
   const index = plan.nodes.findIndex(node => node.id === id)
 
   if (index === -1) {
@@ -397,9 +423,20 @@ function patchNode(state, id, patch, at) {
 const definition = {
   key: 'progressTree',
   stateSchema: { parse: value => value },
-  stateVersion: 3,
-  init: () => ({ plan: null, notes: [], live: [], pending: {}, revision: 0, lastError: null, updatedAt: 0 }),
+  stateVersion: 4,
+  init: () => ({ plan: null, notes: [], live: [], pending: {}, revision: 0, lastError: null, updatedAt: 0, lastUserAt: 0, lastUserText: '' }),
   apply(state, event) {
+    if (event.type === 'user/message') {
+      const text = assistantText(event)
+      return {
+        ...state,
+        lastUserAt: event.time,
+        lastUserText: text === undefined ? '' : text.slice(0, 200),
+        revision: state.revision + 1,
+        updatedAt: event.time,
+      }
+    }
+
     if (event.type === 'assistant/message') {
       const text = assistantText(event)
       if (text === undefined) return state
@@ -516,6 +553,9 @@ const definition = {
         lastError: state.lastError,
         notes: state.notes,
         live: state.live,
+        lastUserAt: state.lastUserAt,
+        lastUserText: state.lastUserText,
+        stale: plan !== null && state.lastUserAt > plan.updatedAt,
         updatedAt: state.updatedAt,
       }
     },
@@ -608,7 +648,7 @@ const planTool = {
 const updateTool = {
   name: 'progress_update',
   description:
-    'Update one node in the live progress tree: status, note, severity, artifacts, title, parentId or lane. Set status "active" when starting a step, "done" when it finishes, "blocked" when stuck (with a reason in note), "paused" when waiting on the user. A new id plus title appends a node.',
+    'Update one node in the live progress tree: status, note, severity, artifacts, title, parentId or lane. Set status "active" when starting a step, "done" when it finishes, "blocked" when stuck (with a reason in note), "paused" when waiting on the user. Set remove:true to delete a node and its children when requirements change. A new id plus title appends a node.',
   parameters: {
     type: 'object',
     properties: {
@@ -620,6 +660,7 @@ const updateTool = {
       artifacts: artifactSchema(),
       parentId: { type: 'string' },
       lane: { type: 'string' },
+      remove: { type: 'boolean', description: 'Delete this node and its descendants (use when the plan changed).' },
       reopen: { type: 'boolean', description: 'Explicitly reopen a done node.' },
     },
     required: ['id'],

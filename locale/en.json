@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Progress tree",
+    "description": "A live task tree, current node and artifacts in the right sidebar.",
+    "detail": "docs/DETAIL.md"
+  }
+}

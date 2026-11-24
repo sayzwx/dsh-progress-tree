@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "进度树",
+    "description": "右侧栏实时展示 AI 的任务树、当前节点与产物。",
+    "detail": "docs/DETAIL.md"
+  }
+}

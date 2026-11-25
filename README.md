@@ -1,8 +1,20 @@
 # Progress Tree（进度树）
 
+A DeepSeek Harness plugin that turns the right sidebar into a live task tree: per-step status,
+blockers, artifacts, and a compact progress dock above the composer. The agent maintains the tree
+through three tools, and the panel also shows what the agent is doing right now while it runs.
+
 DeepSeek Harness 右侧栏任务树插件：把 AI 的多步任务折叠成可扫读的树，实时显示当前节点、状态、阻塞原因与产物。
 
 ![status](https://img.shields.io/badge/dsh-0.2.2--rc.5-blue)
+
+## Screenshots
+
+![Task tree in the right sidebar](assets/screenshot-tree.png)
+
+![Real-time AI status and streaming narration](assets/screenshot-live.png)
+
+![Compact progress dock above the composer](assets/screenshot-dock.png)
 
 ## 功能
 

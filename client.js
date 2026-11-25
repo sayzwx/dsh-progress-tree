@@ -8,6 +8,7 @@ window.__ModuleLoader__.load({
     const KIND = 'progress'
     const NOOP_SUBSCRIBE = () => () => {}
     let openProgressTab = () => {}
+    let clientSessions
 
     const zh = {
       title: '进度树',
@@ -315,12 +316,11 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function ProgressPane({ sessionId, useProjection, useTabInfo, useSessions, t }) {
+    function ProgressPane({ sessionId, useProjection, useTabInfo, t }) {
       const view = useProjection('progressTree')
       const tabInfo = useTabInfo !== undefined ? useTabInfo() : undefined
       const openTab = tabInfo !== undefined ? { tab: tabInfo.tab } : undefined
-      const sessions = typeof useSessions === 'function' ? useSessions() : undefined
-      const binding = sessionId !== undefined && sessions !== undefined ? sessions.binding(sessionId) : undefined
+      const binding = bindingOf(sessionId, clientSessions)
       const live = useLiveFeed(binding)
       const plan = view === undefined || view === null ? undefined : view.plan
 
@@ -574,8 +574,24 @@ window.__ModuleLoader__.load({
       return acc
     }
 
+    function bindingOf(sessionId, sessions) {
+      try {
+        if (sessions === undefined || sessionId === undefined) return undefined
+        return sessions.binding(sessionId)
+      } catch {
+        return undefined
+      }
+    }
+
     function createLiveStore(source) {
-      let acc = liveFromWindow(source.getSnapshot())
+      const read = () => {
+        try {
+          return liveFromWindow(typeof source.getSnapshot === 'function' ? source.getSnapshot() : undefined)
+        } catch {
+          return NO_LIVE
+        }
+      }
+      let acc = read()
       const listeners = new Set()
       let unsubscribe = null
       const ensure = () => {
@@ -583,7 +599,7 @@ window.__ModuleLoader__.load({
         unsubscribe =
           typeof source.subscribe === 'function'
             ? source.subscribe(() => {
-                acc = liveFromWindow(source.getSnapshot())
+                acc = read()
                 for (const listener of listeners) listener()
               })
             : () => {}
@@ -632,7 +648,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function ProgressDock({ sessionId, face, openTab, useProjection, useSessions, t }) {
+    function ProgressDock({ sessionId, face, openTab, useProjection, t }) {
       const subscribe = React.useCallback(
         listener => (face === undefined ? NOOP_SUBSCRIBE() : face.subscribe(listener)),
         [face],
@@ -641,8 +657,7 @@ window.__ModuleLoader__.load({
       const faceView = React.useSyncExternalStore(subscribe, getSnapshot)
       const projected = typeof useProjection === 'function' ? useProjection('progressTree') : undefined
       const view = faceView ?? projected
-      const sessions = typeof useSessions === 'function' ? useSessions() : undefined
-      const binding = sessionId !== undefined && sessions !== undefined ? sessions.binding(sessionId) : undefined
+      const binding = bindingOf(sessionId, clientSessions)
       const live = useLiveFeed(binding)
       const open = typeof openTab === 'function' ? openTab : openProgressTab
       React.useEffect(() => {
@@ -729,6 +744,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale', 'sessions', 'sidebarRight', 'sidebarRightTabs'],
       apply(ctx) {
+        clientSessions = ctx.sessions
         openProgressTab = () => ctx.sidebarRight.openTab(KIND)
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-progress-tree: locale')
         const t = ctx.locale.bind(NS)
@@ -781,3 +797,4 @@ window.__ModuleLoader__.load({
     }
   },
 })
+

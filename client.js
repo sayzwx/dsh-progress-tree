@@ -779,12 +779,13 @@ window.__ModuleLoader__.load({
         // A compact dock above the composer, modeled on the official Timeline
         // TaskDock: plan title + segmented progress + percent + reopen button.
         const progressFace = sessionId => {
-          const binding = sessionId === undefined ? undefined : ctx.sessions.binding(sessionId)
-          if (binding === undefined) return { sessionId, face: undefined, openTab: () => ctx.sidebarRight.openTab(KIND) }
-          return {
-            sessionId,
-            face: binding.session.projections.faceOf('progressTree'),
-            openTab: () => ctx.sidebarRight.openTab(KIND),
+          const binding = bindingOf(sessionId, ctx.sessions)
+          const openTab = () => ctx.sidebarRight.openTab(KIND)
+          if (binding === undefined) return { sessionId, face: undefined, openTab }
+          try {
+            return { sessionId, face: binding.session.projections.faceOf('progressTree'), openTab }
+          } catch {
+            return { sessionId, face: undefined, openTab }
           }
         }
         ctx.slots.inject('conversation.input.dock', () =>

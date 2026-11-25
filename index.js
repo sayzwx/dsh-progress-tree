@@ -34,10 +34,12 @@ Keep a live progress tree for the user whenever work takes more than a couple of
    parallel \`lanes\`, and the plan as \`tasks\`. Every task needs a stable \`id\` and a \`title\`;
    use \`parentId\` for sub-steps, \`lane\` for a parallel lane, and \`kind\` ("phase" | "task" |
    "step" | "agent"). Mark exactly the step you are doing now as \`"status":"active"\`.
-2. Re-plan the moment requirements change. When the user adds, drops, or changes scope, call
-   \`progress_plan\` again with the complete new tree, or drop obsolete nodes with
-   \`progress_update\` \`{"id":"<node>","remove":true}\`. A plan that no longer matches the latest
-   request is flagged stale for the user.
+2. When the user starts a new, distinct request, call \`progress_plan\` again with a new \`title\`
+   describing that request: the old plan is replaced and stops showing as the current task. Only use
+   the append form in rule 7 when the new work genuinely belongs to the current plan. When
+   requirements change within the same task, re-plan with the complete new tree or drop obsolete
+   nodes with \`progress_update\` \`{"id":"<node>","remove":true}\`. A plan that no longer matches the
+   latest request is flagged stale for the user.
 3. Before starting another step, call \`progress_update\` with \`{"id":"<node>","status":"active"}\`.
 4. When a step finishes, call \`progress_update\` with \`{"id":"<node>","status":"done","note":"..."}\`
    and list produced files or URLs in \`artifacts\` (\`[{"path":"docs/x.md"}]\`).
@@ -52,6 +54,14 @@ Keep a live progress tree for the user whenever work takes more than a couple of
 9. In each user-visible update, state three things explicitly in one short sentence: what was just
    finished ("已完成 …"), what happens now ("现在 …"), and any blocking risk or question ("问题 …").
    The pane streams your visible narration while you work, so keep that sentence current.
+10. The user can check a step done or skip it directly in the pane. Keep node ids stable when
+    re-planning (same id or same parent + title keeps its recorded status), and never re-add a step
+    the user skipped under a new id. Earlier pending siblings are auto-confirmed when a later
+    sibling starts; do not reopen them unless the user asks.
+11. Keep updates sparse but timely: update when the plan starts, when a step starts or finishes,
+    when something blocks, or when the direction changes. Do not call a progress tool for every
+    tool call; one update per 2–4 tool calls (or whenever your visible narration changes) is a good
+    rhythm, and it keeps token cost low while the user still sees the current step.
 
 Subagent spawns are added to the tree automatically. Keep titles short and concrete; do not use
 this for one-line answers, and do not update the tree for every tiny tool call.`
@@ -143,7 +153,7 @@ function statusOf(value) {
   return typeof value === 'string' && STATUSES.has(value) ? value : 'pending'
 }
 
-function normalizePlan(args, at) {
+function normalizePlan(args, at, previousPlan) {
   const title = asText(args.title, 200)
   if (title === undefined) return undefined
 
@@ -190,13 +200,32 @@ function normalizePlan(args, at) {
     if (node.lane !== null && !laneIds.has(node.lane)) node.lane = null
   }
 
+  // Re-planning keeps the progress already recorded: match by id first, then by
+  // parent + title, so a rebuilt tree does not silently reset finished steps.
+  const previousNodes = Array.isArray(previousPlan?.nodes) ? previousPlan.nodes : []
+  const previousById = new Map(previousNodes.map(node => [node.id, node]))
+  const previousByTitle = new Map(previousNodes.map(node => [(node.parentId ?? '') + '\u0000' + node.title, node]))
+  for (const node of nodes) {
+    const previous = previousById.get(node.id) ?? previousByTitle.get((node.parentId ?? '') + '\u0000' + node.title)
+    if (previous === undefined) continue
+    if (node.status === 'pending' && previous.status !== 'pending') {
+      node.status = previous.status
+      node.note = node.note ?? previous.note
+      node.severity = node.severity ?? previous.severity
+      node.startedAt = previous.startedAt ?? null
+      node.endedAt = previous.endedAt ?? null
+      node.autoDone = previous.autoDone === true
+    }
+    node.artifacts = mergeArtifacts(node.artifacts, Array.isArray(previous.artifacts) ? previous.artifacts : [])
+  }
+
   return {
     title,
     summary: asText(args.summary, 1000) ?? null,
     mode: args.mode === 'parallel' ? 'parallel' : 'serial',
     lanes,
     nodes,
-    createdAt: at,
+    createdAt: previousPlan?.createdAt ?? at,
     updatedAt: at,
   }
 }
@@ -344,12 +373,39 @@ function normalizeUpdate(state, args, at) {
 
   if (!changed) return undefined
   node.updatedAt = at
-  const nodes = [...plan.nodes]
+  let nodes = [...plan.nodes]
   nodes[index] = node
+  nodes = confirmEarlierSiblings(nodes, index, at)
   return {
     state: { ...state, plan: { ...plan, nodes, updatedAt: at }, revision: state.revision + 1, updatedAt: at },
     added: false,
   }
+}
+
+// When a step starts or finishes, earlier steps under the same parent are
+// treated as confirmed. Agents often forget to close them; leaving them
+// pending makes the whole tree look stalled.
+function confirmEarlierSiblings(nodes, targetIndex, at) {
+  const target = nodes[targetIndex]
+  if (target === undefined) return nodes
+  if (target.status !== 'active' && target.status !== 'done') return nodes
+  let changed = false
+  const next = nodes.map((node, index) => {
+    if (index >= targetIndex) return node
+    if (node.parentId !== target.parentId) return node
+    if (node.status !== 'pending') return node
+    changed = true
+    return {
+      ...node,
+      status: 'done',
+      autoDone: true,
+      note: node.note ?? '自动确认：后续步骤已推进',
+      startedAt: node.startedAt ?? at,
+      endedAt: at,
+      updatedAt: at,
+    }
+  })
+  return changed ? next : nodes
 }
 
 function isAncestor(nodes, ancestorId, nodeId) {
@@ -423,7 +479,7 @@ function patchNode(state, id, patch, at) {
 const definition = {
   key: 'progressTree',
   stateSchema: { parse: value => value },
-  stateVersion: 4,
+  stateVersion: 5,
   init: () => ({ plan: null, notes: [], live: [], pending: {}, revision: 0, lastError: null, updatedAt: 0, lastUserAt: 0, lastUserText: '' }),
   apply(state, event) {
     if (event.type === 'user/message') {
@@ -432,6 +488,7 @@ const definition = {
         ...state,
         lastUserAt: event.time,
         lastUserText: text === undefined ? '' : text.slice(0, 200),
+        live: [],
         revision: state.revision + 1,
         updatedAt: event.time,
       }
@@ -513,7 +570,7 @@ const definition = {
 
       let next = { ...state, pending, lastError: null }
       if (call.name === 'progress_plan') {
-        const plan = normalizePlan(call.args, call.at)
+        const plan = normalizePlan(call.args, call.at, state.plan)
         if (plan !== undefined) {
           next = { ...next, plan, revision: next.revision + 1, updatedAt: call.at }
         }

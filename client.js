@@ -39,6 +39,12 @@ window.__ModuleLoader__.load({
       running: '正在运行',
       idle: '等待中',
       working: 'AI 正在执行',
+      planning: '新任务规划中…',
+      previousTask: '上一任务',
+      'status.skipped': '已跳过',
+      markDone: '点此标记完成 / 取消',
+      markSkip: '点此跳过 / 恢复',
+      autoDone: '自动确认',
     }
     const en = {
       title: 'Progress tree',
@@ -65,6 +71,12 @@ window.__ModuleLoader__.load({
       'status.done': 'Done',
       'status.blocked': 'Blocked',
       'status.paused': 'Paused',
+      'status.skipped': 'Skipped',
+      markDone: 'Mark done / undo',
+      markSkip: 'Skip / restore',
+      autoDone: 'Auto-confirmed',
+      planning: 'Planning the new task…',
+      previousTask: 'Previous task',
       stalePlan: 'Requirements changed — plan needs an update',
       running: 'Running',
       idle: 'Idle',
@@ -84,7 +96,7 @@ window.__ModuleLoader__.load({
       pending: 'var(--dsw-alias-label-tertiary)',
     }
 
-    const GLYPH = { pending: '○', active: '●', done: '✓', blocked: '!', paused: '⏸' }
+    const GLYPH = { pending: '○', active: '●', done: '✓', blocked: '!', paused: '⏸', skipped: '⊘' }
 
     const CSS = `
 .dpt-root{display:flex;flex-direction:column;gap:12px;padding:12px;color:${COLORS.text};font-size:13px;line-height:1.45;min-height:100%;box-sizing:border-box}
@@ -113,6 +125,13 @@ window.__ModuleLoader__.load({
 .dpt-stream{white-space:pre-wrap;word-break:break-word;max-height:52px;overflow:hidden;color:${COLORS.text};font-size:11px;line-height:15px}
 .dpt-stream::after{content:"▍";color:${COLORS.active};animation:dptBlink 1s steps(2,start) infinite}
 .dpt-stale{margin:0 0 6px;padding:5px 8px;border-radius:6px;border:1px dashed ${COLORS.paused};color:${COLORS.paused};font-size:11px;line-height:15px;background:transparent}
+.dpt-newtask{margin:0 0 6px;padding:8px 10px;border-radius:8px;border:1px solid ${COLORS.paused};background:rgba(210,153,34,.08)}
+.dpt-newtask-title{font-size:11px;line-height:16px;color:${COLORS.paused};letter-spacing:.02em}
+.dpt-newtask-text{margin-top:3px;font-size:11px;line-height:15px;color:${COLORS.secondary};max-height:46px;overflow:hidden}
+.dpt-archived-label{margin:2px 0 6px;font-size:10px;line-height:14px;color:${COLORS.tertiary};text-transform:uppercase;letter-spacing:.06em}
+.dpt-root-stale .dpt-head,.dpt-root-stale .dpt-tree-wrap,.dpt-root-stale .dpt-lanes,.dpt-root-stale .dpt-alert,.dpt-root-stale .dpt-error{opacity:.48}
+.dpt-dock-stale .dpt-dock-title{color:${COLORS.paused}}
+.dpt-dock-stale .dpt-dock-progress{opacity:.35}
 .dpt-tree-wrap{display:flex;flex-direction:column;gap:0}
 .dpt-tree-root{position:relative;display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;padding:2px 0 2px}
 .dpt-tree-root::after{content:'';position:absolute;left:3px;top:26px;bottom:-2px;border-left:2px solid ${COLORS.border}}
@@ -140,6 +159,15 @@ window.__ModuleLoader__.load({
 .dpt-node[data-status="done"] .dpt-badge{color:${COLORS.done};border-color:${COLORS.done}}
 .dpt-node[data-status="blocked"] .dpt-badge{color:${COLORS.blocked};border-color:${COLORS.blocked}}
 .dpt-node[data-status="paused"] .dpt-badge{color:${COLORS.paused};border-color:${COLORS.paused}}
+.dpt-node[data-status="skipped"] .dpt-badge{color:${COLORS.tertiary};border-style:dashed}
+.dpt-node[data-status="skipped"] .dpt-name{text-decoration:line-through;color:${COLORS.tertiary}}
+.dpt-node-skipped{opacity:.62}
+.dpt-auto{font-style:italic}
+.dpt-acts{display:flex;gap:2px;margin-left:auto;flex:none;opacity:0;transition:opacity .12s}
+.dpt-node:hover .dpt-acts,.dpt-node:focus-within .dpt-acts{opacity:1}
+.dpt-act{width:18px;height:18px;padding:0;border-radius:5px;border:1px solid ${COLORS.border};background:transparent;color:${COLORS.tertiary};font-size:11px;line-height:1;cursor:pointer}
+.dpt-act:hover{color:${COLORS.text}}
+.dpt-act[data-on="true"]{color:${COLORS.done};border-color:${COLORS.done}}
 .dpt-note{color:${COLORS.secondary};font-size:12px;word-break:break-word;white-space:pre-wrap}
 .dpt-mini{height:3px;border-radius:999px;background:${COLORS.card};overflow:hidden;margin-top:2px}
 .dpt-mini-fill{height:100%;background:${COLORS.done}}
@@ -226,6 +254,73 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // User overrides live in localStorage only: the host projection stays the
+    // source of truth, and a refresh keeps whatever the user checked or skipped.
+    const MANUAL_PREFIX = 'dsh.progress-tree.manual.'
+    const manualStore = new Map()
+    const manualListeners = new Set()
+
+    function readManual(sessionId) {
+      try {
+        const raw = window.localStorage.getItem(MANUAL_PREFIX + sessionId)
+        if (!raw) return {}
+        const parsed = JSON.parse(raw)
+        return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+      } catch {
+        return {}
+      }
+    }
+
+    function snapshotManual(sessionId) {
+      if (!manualStore.has(sessionId)) manualStore.set(sessionId, readManual(sessionId))
+      return manualStore.get(sessionId)
+    }
+
+    function subscribeManual(listener) {
+      manualListeners.add(listener)
+      return () => {
+        manualListeners.delete(listener)
+      }
+    }
+
+    function writeManual(sessionId, manual) {
+      manualStore.set(sessionId, manual)
+      try {
+        window.localStorage.setItem(MANUAL_PREFIX + sessionId, JSON.stringify(manual))
+      } catch {
+        // storage may be unavailable; overrides just do not persist
+      }
+      for (const listener of manualListeners) listener()
+    }
+
+    const MANUAL_STATUSES = new Set(['pending', 'done', 'skipped'])
+
+    function applyManual(view, manual) {
+      if (view === undefined || view === null || view.plan === undefined || view.plan === null) return view
+      const nodes = (Array.isArray(view.plan.nodes) ? view.plan.nodes : []).map(node => {
+        const override = manual[node.id]
+        if (!MANUAL_STATUSES.has(override)) return node
+        return { ...node, status: override, manual: true, autoDone: false }
+      })
+      const counts = { total: nodes.length, done: 0, active: 0, pending: 0, blocked: 0, paused: 0, skipped: 0 }
+      for (const node of nodes) {
+        if (counts[node.status] !== undefined) counts[node.status] += 1
+      }
+      const active = nodes.find(node => node.status === 'active')
+      return {
+        ...view,
+        plan: { ...view.plan, nodes },
+        nodes,
+        counts,
+        currentNodeId: active !== undefined ? active.id : null,
+      }
+    }
+
+    function effectiveStatus(node, manual) {
+      const override = manual[node.id]
+      return MANUAL_STATUSES.has(override) ? override : node.status
+    }
+
     function ArtifactChip({ sessionId, artifact, openTab, t }) {
       const path = typeof artifact === 'string' ? artifact : artifact.path
       const label = typeof artifact === 'string' ? path : artifact.label || artifact.path
@@ -253,17 +348,18 @@ window.__ModuleLoader__.load({
       return h('button', { type: 'button', className: 'dpt-chip', title: path || t('copyPath'), onClick }, label)
     }
 
-    function TreeItem({ node, isLast, sessionId, openTab, t }) {
+    function TreeItem({ node, isLast, sessionId, openTab, t, onDone, onSkip }) {
       const artifacts = Array.isArray(node.artifacts) ? node.artifacts : []
       const stats = subtreeStats(node)
       const hasChildren = node.children.length > 0
       const className = 'dpt-tli' + (isLast && !hasChildren ? ' dpt-tli-end' : '')
+      const skipped = node.status === 'skipped'
       return h(
         'li',
         { className, 'data-status': node.status },
         h(
           'div',
-          { className: 'dpt-node', 'data-status': node.status },
+          { className: 'dpt-node' + (skipped ? ' dpt-node-skipped' : ''), 'data-status': node.status },
           h('span', { className: 'dpt-icon' }, GLYPH[node.status] ?? '○'),
           h(
             'div',
@@ -274,7 +370,42 @@ window.__ModuleLoader__.load({
               h('span', { className: 'dpt-name' }, node.title || node.id),
               node.lane ? h('span', { className: 'dpt-badge' }, t('lane') + ': ' + node.lane) : null,
               h('span', { className: 'dpt-badge' }, statusLabel(node, t)),
+              node.autoDone === true ? h('span', { className: 'dpt-badge dpt-auto' }, t('autoDone')) : null,
               hasChildren ? h('span', { className: 'dpt-badge' }, stats.done + '/' + stats.total) : null,
+              typeof onDone === 'function'
+                ? h(
+                    'span',
+                    { className: 'dpt-acts' },
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dpt-act',
+                        'data-on': node.status === 'done',
+                        title: t('markDone'),
+                        onClick: event => {
+                          event.stopPropagation()
+                          onDone(node.id)
+                        },
+                      },
+                      '✓',
+                    ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dpt-act',
+                        'data-on': node.status === 'skipped',
+                        title: t('markSkip'),
+                        onClick: event => {
+                          event.stopPropagation()
+                          onSkip(node.id)
+                        },
+                      },
+                      '⊘',
+                    ),
+                  )
+                : null,
             ),
             node.note ? h('div', { className: 'dpt-note' }, node.note) : null,
             hasChildren
@@ -300,7 +431,7 @@ window.__ModuleLoader__.load({
               'ul',
               { className: 'dpt-tree' },
               node.children.map((child, index) =>
-                h(TreeItem, { key: child.id, node: child, isLast: index === node.children.length - 1, sessionId, openTab, t }),
+                h(TreeItem, { key: child.id, node: child, isLast: index === node.children.length - 1, sessionId, openTab, t, onDone, onSkip }),
               ),
             )
           : null,
@@ -317,12 +448,45 @@ window.__ModuleLoader__.load({
     }
 
     function ProgressPane({ sessionId, useProjection, useTabInfo, t }) {
-      const view = useProjection('progressTree')
+      const projected = useProjection('progressTree')
+      const [manual, setManual] = React.useState(() => snapshotManual(sessionId))
+      React.useEffect(() => {
+        setManual(snapshotManual(sessionId))
+      }, [sessionId])
+      const view = applyManual(projected, manual)
       const tabInfo = useTabInfo !== undefined ? useTabInfo() : undefined
       const openTab = tabInfo !== undefined ? { tab: tabInfo.tab } : undefined
       const binding = bindingOf(sessionId, clientSessions)
       const live = useLiveFeed(binding)
       const plan = view === undefined || view === null ? undefined : view.plan
+
+      const toggleDone = nodeId => {
+        setManual(previous => {
+          const next = { ...previous }
+          const hostNode = Array.isArray(projected?.plan?.nodes)
+            ? projected.plan.nodes.find(node => node.id === nodeId)
+            : undefined
+          const current = effectiveStatus(hostNode ?? { id: nodeId, status: 'pending' }, previous)
+          if (current === 'done') {
+            if (next[nodeId] === 'done') delete next[nodeId]
+            else next[nodeId] = 'pending'
+          } else {
+            next[nodeId] = 'done'
+          }
+          writeManual(sessionId, next)
+          return next
+        })
+      }
+
+      const toggleSkip = nodeId => {
+        setManual(previous => {
+          const next = { ...previous }
+          if (next[nodeId] === 'skipped') delete next[nodeId]
+          else next[nodeId] = 'skipped'
+          writeManual(sessionId, next)
+          return next
+        })
+      }
 
       if (plan === undefined || plan === null) {
         return h(
@@ -338,15 +502,16 @@ window.__ModuleLoader__.load({
       }
 
       const nodes = Array.isArray(plan.nodes) ? plan.nodes : []
-      const counts = view.counts ?? { total: nodes.length, done: 0, active: 0, pending: 0, blocked: 0, paused: 0 }
-      const total = counts.total || nodes.length || 1
+      const counts = view.counts ?? { total: nodes.length, done: 0, active: 0, pending: 0, blocked: 0, paused: 0, skipped: 0 }
+      const rawTotal = counts.total || nodes.length
+      const total = Math.max(1, rawTotal - (counts.skipped || 0))
       const done = counts.done || 0
       const percent = Math.round((done / total) * 100)
       const activeNode = nodes.find(node => node.status === 'active')
       const blockedNodes = nodes.filter(node => node.status === 'blocked')
       const roots = buildTree(nodes)
       const notes = Array.isArray(view.notes) ? view.notes.slice(-8).reverse() : []
-      const allDone = done === total && total > 0
+      const allDone = total > 0 && done >= total
       const lastDone = [...nodes].reverse().find(node => node.status === 'done')
       const nextPending = nodes.find(node => node.status === 'pending')
       const latestLive = Array.isArray(view.live) && view.live.length > 0 ? view.live[view.live.length - 1] : undefined
@@ -365,8 +530,21 @@ window.__ModuleLoader__.load({
 
       return h(
         'div',
-        { className: 'dpt-root' },
+        { className: 'dpt-root' + (stale ? ' dpt-root-stale' : '') },
+        stale
+          ? h(
+              'div',
+              { className: 'dpt-newtask' },
+              h('div', { className: 'dpt-newtask-title' }, '◌ ' + t('planning')),
+              view.lastUserText
+                ? h('div', { className: 'dpt-newtask-text' }, view.lastUserText)
+                : h('div', { className: 'dpt-newtask-text' }, t('emptyHint')),
+            )
+          : null,
         stale ? h('div', { className: 'dpt-stale' }, '⚠ ' + t('stalePlan')) : null,
+        stale
+          ? h('div', { className: 'dpt-archived-label' }, t('previousTask') + ' · ' + plan.title)
+          : null,
         h(
           'div',
           { className: 'dpt-head' },
@@ -384,7 +562,9 @@ window.__ModuleLoader__.load({
                 : null,
           ),
         ),
-        h(
+        stale
+          ? null
+          : h(
           'div',
           { className: 'dpt-live' },
           lastDone !== undefined
@@ -474,7 +654,7 @@ window.__ModuleLoader__.load({
             'ul',
             { className: 'dpt-tree' },
             roots.map((node, index) =>
-              h(TreeItem, { key: node.id, node, isLast: index === roots.length - 1, sessionId, openTab, t }),
+              h(TreeItem, { key: node.id, node, isLast: index === roots.length - 1, sessionId, openTab, t, onDone: toggleDone, onSkip: toggleSkip }),
             ),
           ),
         ),
@@ -656,7 +836,8 @@ window.__ModuleLoader__.load({
       const getSnapshot = React.useCallback(() => (face === undefined ? null : face.getSnapshot()), [face])
       const faceView = React.useSyncExternalStore(subscribe, getSnapshot)
       const projected = typeof useProjection === 'function' ? useProjection('progressTree') : undefined
-      const view = faceView ?? projected
+      const manual = React.useSyncExternalStore(subscribeManual, () => snapshotManual(sessionId))
+      const view = applyManual(faceView ?? projected, manual)
       const binding = bindingOf(sessionId, clientSessions)
       const live = useLiveFeed(binding)
       const open = typeof openTab === 'function' ? openTab : openProgressTab
@@ -666,11 +847,22 @@ window.__ModuleLoader__.load({
 
       if (view === null || view === undefined || view.plan === null || view.plan === undefined) return null
       const plan = view.plan
-      const counts = view.counts ?? { total: 0, done: 0, active: 0, blocked: 0, paused: 0, pending: 0 }
-      const total = counts.total || 1
+      const stale =
+        view.stale === true ||
+        (typeof plan.updatedAt === 'number' && typeof view.lastUserAt === 'number' && view.lastUserAt > plan.updatedAt)
+      const counts = view.counts ?? { total: 0, done: 0, active: 0, blocked: 0, paused: 0, pending: 0, skipped: 0 }
+      const total = Math.max(1, (counts.total || 0) - (counts.skipped || 0))
       const percent = Math.round(((counts.done || 0) / total) * 100)
       const status =
-        (counts.blocked || 0) > 0 ? 'blocked' : (counts.active || 0) > 0 ? 'active' : percent === 100 ? 'done' : 'pending'
+        stale
+          ? 'stale'
+          : (counts.blocked || 0) > 0
+            ? 'blocked'
+            : (counts.active || 0) > 0
+              ? 'active'
+              : percent === 100
+                ? 'done'
+                : 'pending'
       const segments = ['done', 'active', 'blocked', 'paused']
         .filter(part => (counts[part] || 0) > 0)
         .map(part => [part, counts[part]])
@@ -679,7 +871,7 @@ window.__ModuleLoader__.load({
       }
       return h(
         'section',
-        { className: 'dpt-dock', 'data-status': status },
+        { className: 'dpt-dock' + (stale ? ' dpt-dock-stale' : ''), 'data-status': status },
         h(
           'div',
           {
@@ -699,7 +891,7 @@ window.__ModuleLoader__.load({
             'data-live': live.running !== null || live.streamText !== '' ? 'on' : 'off',
             title: live.running !== null ? t('running') + (live.running.name ? ': ' + live.running.name : '') : t('idle'),
           }),
-          h('span', { className: 'dpt-dock-title' }, plan.title),
+          h('span', { className: 'dpt-dock-title' }, stale ? t('planning') : plan.title),
           h(
             'div',
             { className: 'dpt-dock-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': percent },

@@ -87,6 +87,20 @@ function parseArgs(raw) {
   }
 }
 
+// Best-effort one-line summary of a tool call so the pane can say "running
+// <tool>: <detail>" without any extra model cooperation.
+function toolDetail(name, args) {
+  const candidates = ['command', 'cmd', 'description', 'path', 'file_path', 'pattern', 'query', 'url', 'title', 'prompt']
+  for (const key of candidates) {
+    const value = args[key]
+    if (typeof value !== 'string' || value.trim() === '') continue
+    const compact = value.replace(/\s+/g, ' ').trim()
+    return compact.length > 96 ? compact.slice(0, 93) + '…' : compact
+  }
+  if (Array.isArray(args.tasks)) return args.tasks.length + ' 个步骤'
+  return ''
+}
+
 // Captures the model's own narration ("done X, now Y, risk Z") so the pane can
 // show what the agent says about its process even when it forgets to call a tool.
 function assistantText(event) {
@@ -479,8 +493,8 @@ function patchNode(state, id, patch, at) {
 const definition = {
   key: 'progressTree',
   stateSchema: { parse: value => value },
-  stateVersion: 5,
-  init: () => ({ plan: null, notes: [], live: [], pending: {}, revision: 0, lastError: null, updatedAt: 0, lastUserAt: 0, lastUserText: '' }),
+  stateVersion: 6,
+  init: () => ({ plan: null, notes: [], live: [], pending: {}, revision: 0, lastError: null, updatedAt: 0, lastUserAt: 0, lastUserText: '', activity: null }),
   apply(state, event) {
     if (event.type === 'user/message') {
       const text = assistantText(event)
@@ -489,6 +503,14 @@ const definition = {
         lastUserAt: event.time,
         lastUserText: text === undefined ? '' : text.slice(0, 200),
         live: [],
+        activity: {
+          text: text === undefined ? '' : text.slice(0, 160),
+          startedAt: event.time,
+          tool: null,
+          lastTool: null,
+          narration: '',
+          updatedAt: event.time,
+        },
         revision: state.revision + 1,
         updatedAt: event.time,
       }
@@ -498,22 +520,35 @@ const definition = {
       const text = assistantText(event)
       if (text === undefined) return state
       const live = [...state.live, { at: event.time, text }].slice(-6)
-      return { ...state, live, revision: state.revision + 1, updatedAt: event.time }
+      const activity =
+        state.activity === null
+          ? null
+          : { ...state.activity, narration: text.slice(0, 240), updatedAt: event.time }
+      return { ...state, live, activity, revision: state.revision + 1, updatedAt: event.time }
     }
 
     if (event.type === 'tool/call') {
       const { callId, name, arguments: raw } = event.data
       const args = parseArgs(raw)
       if (args === undefined) return state
+      const activity =
+        state.activity === null
+          ? null
+          : {
+              ...state.activity,
+              tool: { name, detail: toolDetail(name, args), callId, at: event.time },
+              updatedAt: event.time,
+            }
+      const base = activity === null ? state : { ...state, activity }
       if (TOOL_NAMES.has(name)) {
-        return { ...state, pending: { ...state.pending, [callId]: { name, args, at: event.time } } }
+        return { ...base, pending: { ...base.pending, [callId]: { name, args, at: event.time } } }
       }
       if (SUBAGENT_TOOLS.has(name)) {
         const title = asText(args.description, 200) ?? asText(args.prompt, 80) ?? '子 agent'
         return addNode(
           {
-            ...state,
-            pending: { ...state.pending, [callId]: { name, args, at: event.time } },
+            ...base,
+            pending: { ...base.pending, [callId]: { name, args, at: event.time } },
           },
           {
             id: 'agent-' + callId,
@@ -531,7 +566,7 @@ const definition = {
           event.time,
         )
       }
-      return state
+      return base
     }
 
     if (event.type === 'tool/result') {
@@ -543,10 +578,15 @@ const definition = {
       delete pending[callId]
       const at = event.time
       const failed = message?.isError === true
+      const activity =
+        state.activity === null
+          ? null
+          : { ...state.activity, tool: null, lastTool: call.name, updatedAt: at }
+      const base = activity === null ? state : { ...state, activity }
 
       if (SUBAGENT_TOOLS.has(call.name)) {
         const id = 'agent-' + callId
-        let next = { ...state, pending }
+        let next = { ...base, pending }
         next = patchNode(
           next,
           id,
@@ -561,14 +601,14 @@ const definition = {
 
       if (failed) {
         return {
-          ...state,
+          ...base,
           pending,
           lastError: { nodeId: call.args?.id ?? null, text: errorText(message), at },
           updatedAt: at,
         }
       }
 
-      let next = { ...state, pending, lastError: null }
+      let next = { ...base, pending, lastError: null }
       if (call.name === 'progress_plan') {
         const plan = normalizePlan(call.args, call.at, state.plan)
         if (plan !== undefined) {
@@ -612,6 +652,7 @@ const definition = {
         live: state.live,
         lastUserAt: state.lastUserAt,
         lastUserText: state.lastUserText,
+        activity: state.activity,
         stale: plan !== null && state.lastUserAt > plan.updatedAt,
         updatedAt: state.updatedAt,
       }

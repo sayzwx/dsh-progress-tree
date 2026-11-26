@@ -41,6 +41,8 @@ window.__ModuleLoader__.load({
       working: 'AI 正在执行',
       planning: '新任务规划中…',
       previousTask: '上一任务',
+      currentTask: '当前任务',
+      analyzing: '正在分析请求…',
       'status.skipped': '已跳过',
       markDone: '点此标记完成 / 取消',
       markSkip: '点此跳过 / 恢复',
@@ -77,6 +79,8 @@ window.__ModuleLoader__.load({
       autoDone: 'Auto-confirmed',
       planning: 'Planning the new task…',
       previousTask: 'Previous task',
+      currentTask: 'Current task',
+      analyzing: 'Analyzing the request…',
       stalePlan: 'Requirements changed — plan needs an update',
       running: 'Running',
       idle: 'Idle',
@@ -97,6 +101,52 @@ window.__ModuleLoader__.load({
     }
 
     const GLYPH = { pending: '○', active: '●', done: '✓', blocked: '!', paused: '⏸', skipped: '⊘' }
+
+    const TOOL_LABELS = {
+      read: '读取文件',
+      write: '写入文件',
+      edit: '修改文件',
+      exec_command: '运行命令',
+      pwsh: '运行命令',
+      grep: '搜索代码',
+      glob: '查找文件',
+      web_fetch: '抓取网页',
+      web_search: '搜索网页',
+      subagent: '启动子代理',
+      subagent_fork: '启动子代理',
+      subagent_claude_code: '启动子代理',
+      todo_write: '更新待办',
+      progress_plan: '更新计划',
+      progress_update: '更新进度',
+      progress_note: '记录进度',
+      job_output: '等待后台任务',
+      plugin_manager: '管理插件',
+      cordis_inspect_query: '查询运行时',
+      cordis_inspect_list: '查询运行时',
+    }
+
+    function toolLabel(name) {
+      if (typeof name !== 'string' || name === '') return ''
+      if (TOOL_LABELS[name] !== undefined) return TOOL_LABELS[name]
+      if (name.startsWith('mcp__dbx__')) return '数据库操作'
+      if (name.startsWith('job_')) return '后台任务'
+      if (name.startsWith('cordis_')) return '查询运行时'
+      return name
+    }
+
+    function shortText(text, max) {
+      if (typeof text !== 'string') return ''
+      const compact = text.replace(/\s+/g, ' ').trim()
+      return compact.length > max ? compact.slice(0, max - 1) + '…' : compact
+    }
+
+    function elapsedText(from, now) {
+      if (typeof from !== 'number' || !Number.isFinite(from)) return ''
+      const seconds = Math.max(0, Math.round((now - from) / 1000))
+      if (seconds < 60) return seconds + 's'
+      const minutes = Math.floor(seconds / 60)
+      return minutes + 'm ' + (seconds % 60) + 's'
+    }
 
     const CSS = `
 .dpt-root{display:flex;flex-direction:column;gap:12px;padding:12px;color:${COLORS.text};font-size:13px;line-height:1.45;min-height:100%;box-sizing:border-box}
@@ -128,6 +178,14 @@ window.__ModuleLoader__.load({
 .dpt-newtask{margin:0 0 6px;padding:8px 10px;border-radius:8px;border:1px solid ${COLORS.paused};background:rgba(210,153,34,.08)}
 .dpt-newtask-title{font-size:11px;line-height:16px;color:${COLORS.paused};letter-spacing:.02em}
 .dpt-newtask-text{margin-top:3px;font-size:11px;line-height:15px;color:${COLORS.secondary};max-height:46px;overflow:hidden}
+.dpt-activity{margin:0 0 8px;padding:8px 10px;border-radius:8px;border:1px solid ${COLORS.border};background:${COLORS.card}}
+.dpt-activity-label{font-size:10px;line-height:14px;color:${COLORS.tertiary};text-transform:uppercase;letter-spacing:.06em}
+.dpt-activity-request{margin-top:4px;font-size:11px;line-height:16px;color:${COLORS.secondary};max-height:44px;overflow:hidden}
+.dpt-activity-now{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;line-height:18px;color:${COLORS.text}}
+.dpt-spin{display:inline-block;color:${COLORS.active};animation:dptSpin 1.2s linear infinite}
+@keyframes dptSpin{to{transform:rotate(360deg)}}
+.dpt-tree-current{margin:2px 0 10px}
+.dpt-tree-current .dpt-tree-root-dot{background:${COLORS.active};box-shadow:0 0 0 3px rgba(76,141,255,.18)}
 .dpt-archived-label{margin:2px 0 6px;font-size:10px;line-height:14px;color:${COLORS.tertiary};text-transform:uppercase;letter-spacing:.06em}
 .dpt-root-stale .dpt-head,.dpt-root-stale .dpt-tree-wrap,.dpt-root-stale .dpt-lanes,.dpt-root-stale .dpt-alert,.dpt-root-stale .dpt-error{opacity:.48}
 .dpt-dock-stale .dpt-dock-title{color:${COLORS.paused}}
@@ -458,6 +516,11 @@ window.__ModuleLoader__.load({
       const openTab = tabInfo !== undefined ? { tab: tabInfo.tab } : undefined
       const binding = bindingOf(sessionId, clientSessions)
       const live = useLiveFeed(binding)
+      const [now, setNow] = React.useState(() => Date.now())
+      React.useEffect(() => {
+        const timer = window.setInterval(() => setNow(Date.now()), 1000)
+        return () => window.clearInterval(timer)
+      }, [])
       const plan = view === undefined || view === null ? undefined : view.plan
 
       const toggleDone = nodeId => {
@@ -527,6 +590,18 @@ window.__ModuleLoader__.load({
         (typeof plan.updatedAt === 'number' && typeof view.lastUserAt === 'number' && view.lastUserAt > plan.updatedAt)
       const streaming = typeof live.streamText === 'string' ? live.streamText.trim() : ''
       const runningTool = live.running === null || live.running === undefined ? null : live.running.name
+      const activity = view.activity ?? null
+      const activityNow =
+        activity === null
+          ? ''
+          : activity.tool !== null && activity.tool !== undefined
+            ? toolLabel(activity.tool.name) + (activity.tool.detail ? ' · ' + activity.tool.detail : '')
+            : activity.narration
+              ? shortText(activity.narration, 140)
+              : ''
+      const activitySince = activity === null ? undefined : (activity.tool?.at ?? activity.startedAt)
+      const activityElapsed = elapsedText(activitySince, now)
+      const activityText = activity !== null && activity.text ? activity.text : (view.lastUserText ?? '')
 
       return h(
         'div',
@@ -534,14 +609,48 @@ window.__ModuleLoader__.load({
         stale
           ? h(
               'div',
-              { className: 'dpt-newtask' },
-              h('div', { className: 'dpt-newtask-title' }, '◌ ' + t('planning')),
-              view.lastUserText
-                ? h('div', { className: 'dpt-newtask-text' }, view.lastUserText)
-                : h('div', { className: 'dpt-newtask-text' }, t('emptyHint')),
+              { className: 'dpt-activity' },
+              h('div', { className: 'dpt-activity-label' }, t('currentTask')),
+              activityText ? h('div', { className: 'dpt-activity-request' }, shortText(activityText, 160)) : null,
+              h(
+                'div',
+                { className: 'dpt-activity-now' },
+                h('span', { className: 'dpt-spin' }, '◌'),
+                h('span', null, (activityNow || t('analyzing')) + (activityElapsed ? ' · ' + activityElapsed : '')),
+              ),
             )
           : null,
-        stale ? h('div', { className: 'dpt-stale' }, '⚠ ' + t('stalePlan')) : null,
+        stale
+          ? h(
+              'div',
+              { className: 'dpt-tree-wrap dpt-tree-current' },
+              h(
+                'div',
+                { className: 'dpt-tree-root' },
+                h('span', { className: 'dpt-tree-root-dot' }),
+                h('span', { className: 'dpt-tree-root-text' }, t('currentTask')),
+              ),
+              h(
+                'ul',
+                { className: 'dpt-tree' },
+                h(TreeItem, {
+                  node: {
+                    id: '__activity',
+                    title: activityNow || t('analyzing'),
+                    status: 'active',
+                    note: activityText ? shortText(activityText, 120) : null,
+                    artifacts: [],
+                    children: [],
+                    lane: null,
+                  },
+                  isLast: true,
+                  sessionId,
+                  openTab,
+                  t,
+                }),
+              ),
+            )
+          : null,
         stale
           ? h('div', { className: 'dpt-archived-label' }, t('previousTask') + ' · ' + plan.title)
           : null,
@@ -850,6 +959,13 @@ window.__ModuleLoader__.load({
       const stale =
         view.stale === true ||
         (typeof plan.updatedAt === 'number' && typeof view.lastUserAt === 'number' && view.lastUserAt > plan.updatedAt)
+      const activity = view.activity ?? null
+      const dockNow =
+        activity === null
+          ? t('analyzing')
+          : activity.tool !== null && activity.tool !== undefined
+            ? toolLabel(activity.tool.name) + (activity.tool.detail ? ' · ' + activity.tool.detail : '')
+            : shortText(activity.narration ?? '', 42) || t('analyzing')
       const counts = view.counts ?? { total: 0, done: 0, active: 0, blocked: 0, paused: 0, pending: 0, skipped: 0 }
       const total = Math.max(1, (counts.total || 0) - (counts.skipped || 0))
       const percent = Math.round(((counts.done || 0) / total) * 100)
@@ -878,7 +994,7 @@ window.__ModuleLoader__.load({
             className: 'dpt-dock-bar',
             role: 'button',
             tabIndex: 0,
-            title: t('reopen') + ' · ' + plan.title,
+            title: t('reopen') + ' · ' + (stale ? dockNow : plan.title),
             onClick: toggle,
             onKeyDown: event => {
               if (event.key !== 'Enter' && event.key !== ' ') return
@@ -891,7 +1007,7 @@ window.__ModuleLoader__.load({
             'data-live': live.running !== null || live.streamText !== '' ? 'on' : 'off',
             title: live.running !== null ? t('running') + (live.running.name ? ': ' + live.running.name : '') : t('idle'),
           }),
-          h('span', { className: 'dpt-dock-title' }, stale ? t('planning') : plan.title),
+          h('span', { className: 'dpt-dock-title' }, stale ? dockNow : plan.title),
           h(
             'div',
             { className: 'dpt-dock-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': percent },

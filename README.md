@@ -21,8 +21,8 @@ DeepSeek Harness 右侧栏任务树插件：把 AI 的多步任务折叠成可�
 - 右侧栏「进度树」页签：标题、摘要、进度条、当前节点，以及带主干/分支连接线的任务树（可嵌套子节点）、泳道、过程记录。
 - 输入框上方紧凑进度条（参照官方实验版 Timeline 的 TaskDock）：计划标题 + 分段进度 + 百分比 + 打开按钮；宽度 50%、高 18px、字号 10px（官方 `.timeline-dock` 的 `--dsh-composer-side-clearance` / `--dsh-composer-card-max-width` 约束减半），新计划首次出现时自动开页签。
 - 过程标注：页签顶部固定展示「已完成 / 现在 / 接下来 / 问题」四行；宿主 projection 自动捕获助手每轮叙述的最后一句作为「AI 近况」（无需模型额外调用），模型也可用 `progress_note` 补充 warn/error 级别备注。
-- 实时动向：客户端订阅会话 `eventSource`，运行中直接显示流式叙述（带光标）和正在运行的 tool 名；dock 上有直播脉冲点。投影的 `lastUserAt` 与 `stale` 会在需求变化但计划未更新时给出「需求已更新，计划待同步」提示。
-- 新任务切换：用户开始新请求而计划尚未重建时，页签顶部显示「新任务规划中…」与最新请求原文，旧计划折叠为「上一任务」并淡化；dock 切换为琥珀色「新任务规划中…」。`user/message` 到达时清空上一轮的 AI 近况，避免旧叙述冒充当前进度。
+- 实时动向：客户端订阅会话 `eventSource`，运行中直接显示流式叙述（带光标）和正在运行的 tool 名；dock 上有直播脉冲点。宿主同时自动记录「当前请求 / 正在运行的工具与明细 / 已用时 / 最近叙述」到 projection 的 `activity`，**不依赖模型主动调用进度工具**：右侧栏用「当前任务」活动卡 + 单节点当前任务树显示“现在在做什么”，工具名转成人话（读取文件、运行命令、搜索代码、抓取网页、数据库操作……），用时每秒刷新。投影的 `lastUserAt` 与 `stale` 用于区分当前任务与上一任务。
+- 新任务切换：用户开始新请求而计划尚未重建时，右侧栏顶部显示「当前任务」活动卡（请求原文 + 当前动作 + 用时），旧计划折叠为「上一任务」并淡化；dock 标题同步换成当前动作，不再用“新任务规划中…”占位。`user/message` 到达时清空上一轮的 AI 近况，避免旧叙述冒充当前进度。
 - 计划随需求更新：模型可用 `progress_plan` 重建整棵树，或用 `progress_update {"id":"...","remove":true}` 删除过期节点（连同子节点）。
 - 旧步骤自动确认：后续兄弟节点开始/完成时，同一父节点下更早的 pending 步骤自动置 done 并标注「自动确认」，树不会长期停在旧进度上。
 - 手动勾选 / 跳过：树节点悬停出现 ✓ / ⊘ 按钮，可标记完成或跳过；跳过节点保留记录并显示为划线淡灰，进度分母自动排除跳过项。手动覆盖存储在 `localStorage` 的 `dsh.progress-tree.manual.<sessionId>`，刷新后保留。
@@ -39,7 +39,7 @@ plugin_manager install_bundle D:\Dsh-dailywork\plugins\dsh-progress-tree
 
 安装后刷新 Web GUI。替换已安装的包需要先 `remove_bundle` 再 `install_bundle`。
 
-> 2026-11-25 验证：host 三个工具、投影 checkpoint（v5）、`sidebar.right.pane.tab` 与 `conversation.input.dock` 两处客户端注册均已生效；自动打开键 `dsh.progress-tree.auto.<sessionId>` 已写入。
+> 2026-11-26 验证：host 三个工具、投影 checkpoint（v6，含 `activity`）、`sidebar.right.pane.tab` 与 `conversation.input.dock` 两处客户端注册均已生效；自动打开键 `dsh.progress-tree.auto.<sessionId>` 已写入。
 
 ## 工具
 

@@ -87,6 +87,23 @@ function parseArgs(raw) {
   }
 }
 
+// Time samples, compression summaries and goal-round nudges arrive as
+// user/message events but are not real requests: they must not reset the
+// activity card or make the plan look stale.
+function isInjectedUserMessage(text) {
+  if (typeof text !== 'string') return true
+  const head = text.trimStart()
+  if (head === '') return true
+  return (
+    head.startsWith('Time sampled') ||
+    head.startsWith('[Compressed conversation') ||
+    head.startsWith('[goal_round]') ||
+    head.startsWith('<goal_round>') ||
+    head.startsWith('<system-reminder>') ||
+    head.startsWith('The following information describes')
+  )
+}
+
 // Best-effort one-line summary of a tool call so the pane can say "running
 // <tool>: <detail>" without any extra model cooperation.
 function toolDetail(name, args) {
@@ -493,11 +510,12 @@ function patchNode(state, id, patch, at) {
 const definition = {
   key: 'progressTree',
   stateSchema: { parse: value => value },
-  stateVersion: 6,
+  stateVersion: 7,
   init: () => ({ plan: null, notes: [], live: [], pending: {}, revision: 0, lastError: null, updatedAt: 0, lastUserAt: 0, lastUserText: '', activity: null }),
   apply(state, event) {
     if (event.type === 'user/message') {
       const text = assistantText(event)
+      if (isInjectedUserMessage(text)) return state
       return {
         ...state,
         lastUserAt: event.time,
@@ -513,6 +531,15 @@ const definition = {
         },
         revision: state.revision + 1,
         updatedAt: event.time,
+      }
+    }
+
+    if (event.type === 'turn/end') {
+      if (state.activity === null) return state
+      return {
+        ...state,
+        activity: { ...state.activity, tool: null, endedAt: event.time, updatedAt: event.time },
+        revision: state.revision + 1,
       }
     }
 

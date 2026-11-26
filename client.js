@@ -43,6 +43,7 @@ window.__ModuleLoader__.load({
       previousTask: '上一任务',
       currentTask: '当前任务',
       analyzing: '正在分析请求…',
+      turnDone: '本轮已结束',
       'status.skipped': '已跳过',
       markDone: '点此标记完成 / 取消',
       markSkip: '点此跳过 / 恢复',
@@ -81,6 +82,7 @@ window.__ModuleLoader__.load({
       previousTask: 'Previous task',
       currentTask: 'Current task',
       analyzing: 'Analyzing the request…',
+      turnDone: 'Turn finished',
       stalePlan: 'Requirements changed — plan needs an update',
       running: 'Running',
       idle: 'Idle',
@@ -591,8 +593,12 @@ window.__ModuleLoader__.load({
       const streaming = typeof live.streamText === 'string' ? live.streamText.trim() : ''
       const runningTool = live.running === null || live.running === undefined ? null : live.running.name
       const activity = view.activity ?? null
-      const activityNow =
-        activity === null
+      const activityEnded = activity !== null && typeof activity.endedAt === 'number'
+      const activityNow = activityEnded
+        ? activity.lastTool
+          ? toolLabel(activity.lastTool) + ' · 已完成'
+          : t('turnDone')
+        : activity === null
           ? ''
           : activity.tool !== null && activity.tool !== undefined
             ? toolLabel(activity.tool.name) + (activity.tool.detail ? ' · ' + activity.tool.detail : '')
@@ -600,7 +606,7 @@ window.__ModuleLoader__.load({
               ? shortText(activity.narration, 140)
               : ''
       const activitySince = activity === null ? undefined : (activity.tool?.at ?? activity.startedAt)
-      const activityElapsed = elapsedText(activitySince, now)
+      const activityElapsed = elapsedText(activitySince, activityEnded ? activity.endedAt : now)
       const activityText = activity !== null && activity.text ? activity.text : (view.lastUserText ?? '')
 
       return h(
@@ -960,8 +966,12 @@ window.__ModuleLoader__.load({
         view.stale === true ||
         (typeof plan.updatedAt === 'number' && typeof view.lastUserAt === 'number' && view.lastUserAt > plan.updatedAt)
       const activity = view.activity ?? null
-      const dockNow =
-        activity === null
+      const dockActivityEnded = activity !== null && typeof activity.endedAt === 'number'
+      const dockNow = dockActivityEnded
+        ? activity.lastTool
+          ? toolLabel(activity.lastTool) + ' · 已完成'
+          : t('turnDone')
+        : activity === null
           ? t('analyzing')
           : activity.tool !== null && activity.tool !== undefined
             ? toolLabel(activity.tool.name) + (activity.tool.detail ? ' · ' + activity.tool.detail : '')

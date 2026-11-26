@@ -39,7 +39,7 @@ plugin_manager install_bundle D:\Dsh-dailywork\plugins\dsh-progress-tree
 
 安装后刷新 Web GUI。替换已安装的包需要先 `remove_bundle` 再 `install_bundle`。
 
-> 2026-11-26 验证：host 三个工具、投影 checkpoint（v6，含 `activity`）、`sidebar.right.pane.tab` 与 `conversation.input.dock` 两处客户端注册均已生效；自动打开键 `dsh.progress-tree.auto.<sessionId>` 已写入。
+> 2026-11-26 验证：host 三个工具、投影 checkpoint（v7，含 `activity` 与系统消息过滤）、`sidebar.right.pane.tab` 与 `conversation.input.dock` 两处客户端注册均已生效；自动打开键 `dsh.progress-tree.auto.<sessionId>` 已写入。
 
 ## 工具
 
